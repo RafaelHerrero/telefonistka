@@ -5,7 +5,9 @@
 
 <!-- markdownlint-enable MD033 -->
 
-Telefonistka is a Github webhook server/Bot that facilitates change promotion across environments/failure domains in Infrastructure as Code(IaC) GitOps repos.
+Telefonistka is a webhook server/Bot that facilitates change promotion across environments/failure domains in Infrastructure as Code(IaC) GitOps repos.
+
+**Supports both GitHub and GitLab!** 🎉
 
 It assumes the [repeatable part of your infrastucture is modeled in folders](#modeling-environmentsfailure-domains-in-an-iac-gitops-repo)
 
@@ -158,6 +160,40 @@ webhookEndpointRegexs:
 ```
 
 see [here](docs/webhook_multiplexing.md) for more details
+
+## GitLab Support
+
+Telefonistka now fully supports GitLab in addition to GitHub! Deploy it as:
+
+- **Webhook Server** - Persistent server receiving GitLab webhooks (recommended for production)
+- **CI/CD Pipeline** - Run in your GitLab CI/CD pipeline on each MR event
+
+### Quick Start (GitLab)
+
+**Option 1: Webhook Server**
+
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -e GITLAB_TOKEN="your-token" \
+  -e GITLAB_URL="https://gitlab.com" \
+  ghcr.io/commercetools/telefonistka:latest server
+```
+
+Then configure webhook in your GitLab project: `http://your-server:8080/webhook`
+
+**Option 2: CI/CD Pipeline**
+
+Add to your `.gitlab-ci.yml`:
+
+```yaml
+include:
+  - remote: 'https://raw.githubusercontent.com/commercetools/telefonistka/main/examples/gitlab-ci/telefonistka.yml'
+```
+
+Set `TELEFONISTKA_GITLAB_TOKEN` in your CI/CD variables.
+
+**See full documentation:** [docs/gitlab-integration.md](docs/gitlab-integration.md)
 
 ## Installation and Configuration
 

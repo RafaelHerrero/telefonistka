@@ -1,0 +1,27 @@
+# Application Configuration
+app:
+  name: demo-app
+  version: 1.0.0
+
+image:
+  repository: nginx
+  tag: 1.21.0
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+resources:
+  requests:
+    memory: "64Mi"
+    cpu: "100m"
+  limits:
+    memory: "128Mi"
+    cpu: "200m"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+
+# Environment-specific settings (will be different in dev/staging)
+environment: workspace

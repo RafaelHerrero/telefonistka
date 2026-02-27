@@ -1,0 +1,20 @@
+name: Telefonistka
+# Controls when the workflow will run
+# "closed" is used for promoting changes
+# "opened"/"synchronize" are needed to warn on drift
+on:
+  pull_request:
+    types:
+      - closed
+      - opened
+      - synchronize
+    branches: [ "main" ]
+
+jobs:
+  telefonistka:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Telefonistka
+        uses: wayfair-incubator/telefonistka-action@v1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}

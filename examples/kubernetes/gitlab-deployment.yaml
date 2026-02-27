@@ -1,0 +1,162 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: telefonistka
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: telefonistka-secrets
+  namespace: telefonistka
+type: Opaque
+stringData:
+  gitlab-token: "YOUR_GITLAB_TOKEN_HERE"
+  gitlab-webhook-secret: "YOUR_WEBHOOK_SECRET_HERE"
+  # Optional: Auto-approver token
+  # approver-gitlab-token: "YOUR_APPROVER_TOKEN_HERE"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: telefonistka-config
+  namespace: telefonistka
+data:
+  GITLAB_URL: "https://gitlab.com"
+  LOG_LEVEL: "info"
+  TEMPLATES_PATH: "/srv/templates"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telefonistka
+  namespace: telefonistka
+  labels:
+    app: telefonistka
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: telefonistka
+  template:
+    metadata:
+      labels:
+        app: telefonistka
+    spec:
+      containers:
+      - name: telefonistka
+        image: ghcr.io/commercetools/telefonistka:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        - name: GITLAB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: telefonistka-secrets
+              key: gitlab-token
+        - name: GITLAB_WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: telefonistka-secrets
+              key: gitlab-webhook-secret
+        - name: GITLAB_URL
+          valueFrom:
+            configMapKeyRef:
+              name: telefonistka-config
+              key: GITLAB_URL
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: telefonistka-config
+              key: LOG_LEVEL
+        - name: TEMPLATES_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: telefonistka-config
+              key: TEMPLATES_PATH
+        command: ["telefonistka", "server"]
+        livenessProbe:
+          httpGet:
+            path: /live
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telefonistka
+  namespace: telefonistka
+  labels:
+    app: telefonistka
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: telefonistka
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: telefonistka
+  namespace: telefonistka
+  annotations:
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # kubernetes.io/tls-acme: "true"
+spec:
+  rules:
+  - host: telefonistka.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: telefonistka
+            port:
+              number: 80
+  # tls:
+  # - hosts:
+  #   - telefonistka.example.com
+  #   secretName: telefonistka-tls
+
+# Usage:
+# 1. Update the secret with your GitLab token:
+#    kubectl edit secret telefonistka-secrets -n telefonistka
+#
+# 2. Update the ConfigMap with your GitLab URL:
+#    kubectl edit configmap telefonistka-config -n telefonistka
+#
+# 3. Update the Ingress host:
+#    kubectl edit ingress telefonistka -n telefonistka
+#
+# 4. Apply the manifest:
+#    kubectl apply -f gitlab-deployment.yaml
+#
+# 5. Configure webhook in GitLab:
+#    URL: https://telefonistka.example.com/webhook
+#    Secret: (value from telefonistka-secrets)
+#    Triggers: Merge request events, Comments
+#
+# 6. Check deployment:
+#    kubectl get pods -n telefonistka
+#    kubectl logs -f deployment/telefonistka -n telefonistka

@@ -1,0 +1,60 @@
+# Telefonistka for GitLab CI/CD
+#
+# This template enables Telefonistka promotion workflows in your GitLab CI/CD pipeline.
+#
+# Usage:
+#   1. Include this file in your .gitlab-ci.yml:
+#      include:
+#        - remote: 'https://raw.githubusercontent.com/commercetools/telefonistka/main/examples/gitlab-ci/telefonistka.yml'
+#   
+#   2. Set required CI/CD variables in your GitLab project:
+#      Settings → CI/CD → Variables:
+#      - TELEFONISTKA_GITLAB_TOKEN: Personal or Project Access Token with api scope
+#
+#   3. Add telefonistka.yaml configuration to your repository root
+
+variables:
+  TELEFONISTKA_IMAGE: "ghcr.io/commercetools/telefonistka:latest"
+  # Override with your own registry if needed:
+  # TELEFONISTKA_IMAGE: "registry.gitlab.com/your-org/telefonistka:latest"
+
+stages:
+  - promotion
+
+# Run Telefonistka on merge request events
+telefonistka:mr:
+  stage: promotion
+  image: $TELEFONISTKA_IMAGE
+  script:
+    - echo "🤖 Running Telefonistka for GitLab"
+    - telefonistka event --provider gitlab
+  rules:
+    # Run on merge request events
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: always
+  variables:
+    GITLAB_TOKEN: $TELEFONISTKA_GITLAB_TOKEN
+    GITLAB_URL: $CI_SERVER_URL
+    LOG_LEVEL: info
+  allow_failure: false
+
+# Optional: Handle drift detection on MR updates
+telefonistka:drift:
+  stage: promotion
+  image: $TELEFONISTKA_IMAGE
+  script:
+    - echo "🔍 Checking for environment drift"
+    - telefonistka event --provider gitlab --type drift-check
+  rules:
+    # Run only when files in these directories change
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - workspace/**/*
+        - staging/**/*
+        - production/**/*
+      when: always
+  variables:
+    GITLAB_TOKEN: $TELEFONISTKA_GITLAB_TOKEN
+    GITLAB_URL: $CI_SERVER_URL
+    LOG_LEVEL: info
+  allow_failure: true  # Don't fail pipeline if drift check fails

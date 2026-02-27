@@ -1,0 +1,16 @@
+# Simple Telefonistka Setup for GitLab CI
+#
+# This is the simplest possible setup. Just include this file
+# and set TELEFONISTKA_GITLAB_TOKEN in your CI/CD variables.
+
+include:
+  - remote: 'https://raw.githubusercontent.com/commercetools/telefonistka/main/examples/gitlab-ci/telefonistka.yml'
+
+# That's it! Telefonistka will now:
+# - Monitor merge requests
+# - Create promotion MRs when changes are merged
+# - Check for drift between environments
+#
+# Don't forget to:
+# 1. Add TELEFONISTKA_GITLAB_TOKEN to your CI/CD variables
+# 2. Add telefonistka.yaml to your repository root

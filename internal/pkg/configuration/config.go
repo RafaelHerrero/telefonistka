@@ -44,6 +44,9 @@ type Config struct {
 	WebhookEndpointRegexs        []WebhookEndpointRegex `yaml:"webhookEndpointRegexs"`
 	WhProxtSkipTLSVerifyUpstream bool                   `yaml:"whProxtSkipTLSVerifyUpstream"`
 	Argocd                       ArgocdConfig           `yaml:"argocd"`
+
+	// Git provider configuration
+	GitProvider ProviderConfig `yaml:"gitProvider"`
 }
 
 type ArgocdConfig struct {
@@ -52,6 +55,13 @@ type ArgocdConfig struct {
 	AllowSyncfromBranchPathRegex  string `yaml:"allowSyncfromBranchPathRegex"`
 	UseSHALabelForAppDiscovery    bool   `yaml:"useSHALabelForAppDiscovery"`
 	CreateTempAppObjectFroNewApps bool   `yaml:"createTempAppObjectFromNewApps"`
+}
+
+// ProviderConfig contains Git provider configuration
+type ProviderConfig struct {
+	Type   string            `yaml:"type"`   // "github" or "gitlab"
+	URL    string            `yaml:"url"`    // For self-hosted instances
+	Config map[string]string `yaml:"config"` // Provider-specific config
 }
 
 func ParseConfigFromYaml(y string) (*Config, error) {

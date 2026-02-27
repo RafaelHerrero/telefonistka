@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  telefonistka:
+    image: ghcr.io/commercetools/telefonistka:latest
+    container_name: telefonistka-gitlab
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # GitLab Configuration
+      - GITLAB_TOKEN=${GITLAB_TOKEN:?GITLAB_TOKEN is required}
+      - GITLAB_URL=${GITLAB_URL:-https://gitlab.com}
+      - GITLAB_WEBHOOK_SECRET=${GITLAB_WEBHOOK_SECRET:-}
+      
+      # Optional: Auto-approver token (for automatic PR approval)
+      # - APPROVER_GITLAB_TOKEN=${APPROVER_GITLAB_TOKEN}
+      
+      # Optional: ArgoCD Integration
+      # - ARGOCD_SERVER_ADDR=${ARGOCD_SERVER_ADDR}
+      # - ARGOCD_TOKEN=${ARGOCD_TOKEN}
+      # - ARGOCD_PLAINTEXT=false
+      # - ARGOCD_INSECURE=false
+      
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      
+      # Templates path
+      - TEMPLATES_PATH=/srv/templates
+    
+    volumes:
+      # Optional: Mount custom templates
+      # - ./custom-templates:/srv/custom-templates
+      - telefonistka-data:/srv/data
+    
+    command: ["server"]
+    
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  telefonistka-data:
+
+# Usage:
+# 1. Create a .env file with your GitLab configuration:
+#    GITLAB_TOKEN=glpat-your-token-here
+#    GITLAB_URL=http://gitlab.localhost
+#    GITLAB_WEBHOOK_SECRET=your-secret-here
+#
+# 2. Start the server:
+#    docker-compose up -d
+#
+# 3. Configure webhook in your GitLab projects:
+#    URL: http://your-server:8080/webhook
+#    Secret: (same as GITLAB_WEBHOOK_SECRET)
+#    Triggers: Merge request events, Comments
+#
+# 4. View logs:
+#    docker-compose logs -f telefonistka
+#
+# 5. Check health:
+#    curl http://localhost:8080/live
+#    curl http://localhost:8080/metrics

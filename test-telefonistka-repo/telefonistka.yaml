@@ -1,0 +1,39 @@
+# Telefonistka Configuration
+# This file defines the promotion workflow for your GitOps repository
+
+promotionPaths:
+  # First promotion: workspace → dev
+  - sourcePath: "workspace/"
+    conditions:
+      autoMerge: true  # Automatically merge PRs to dev
+    promotionPrs:
+      - targetDescription: "Development Environment"
+        targetPaths:
+          - "clusters/dev/"
+
+  # Second promotion: dev → staging
+  - sourcePath: "clusters/dev/[^/]*"
+    promotionPrs:
+      - targetDescription: "Staging Environment"
+        targetPaths:
+          - "clusters/staging/"
+
+# Enable dry run mode to see what would happen without creating actual PRs
+# Set to false when you're ready to test real promotions
+dryRunMode: false
+
+# Auto-approve promotion PRs (requires APPROVER_GITHUB_OAUTH_TOKEN)
+# Set to true if you want automatic approvals (useful for testing)
+autoApprovePromotionPrs: false
+
+# ArgoCD integration (optional - only if you have ArgoCD running)
+# argocd:
+#   commentDiffonPR: true              # Show diff in PR comments
+#   autoMergeNoDiffPRs: false          # Auto-merge if no changes detected
+#   useSHALabelForAppDiscovery: false  # Use SHA labels for app discovery
+#   allowSyncfromBranchPathRegex: '^workspace/.*$'  # Allow sync from branch
+
+# Toggle commit status (optional)
+# Allows users to override commit status by commenting in PRs
+# toggleCommitStatus:
+#   override-checks: "github-checks"
