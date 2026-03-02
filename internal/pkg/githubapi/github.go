@@ -22,6 +22,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/cenkalti/backoff/v4"
 	"github.com/commercetools/telefonistka/internal/pkg/argocd"
 	cfg "github.com/commercetools/telefonistka/internal/pkg/configuration"
@@ -737,7 +738,7 @@ func handleMergedPrEvent(ghPrClientDetails GhPrClientDetails, prApproverGithubCl
 
 			var treeEntries []*github.TreeEntry
 			for trgt, src := range promotion.ComputedSyncPaths {
-				err = GenerateSyncTreeEntriesForCommit(&treeEntries, ghPrClientDetails, src, trgt, defaultBranch)
+				err = GenerateSyncTreeEntriesForCommit(&treeEntries, ghPrClientDetails, src, trgt, defaultBranch, promotion.Metadata.BlockList)
 				if err != nil {
 					ghPrClientDetails.PrLogger.Errorf("Failed to generate treeEntries for %s > %s,  err=%v", src, trgt, err)
 				} else {
@@ -1076,15 +1077,57 @@ func getDirecotyGitObjectSha(ghPrClientDetails GhPrClientDetails, dirPath string
 	return direcotyGitObjectSha, nil
 }
 
-func GenerateSyncTreeEntriesForCommit(treeEntries *[]*github.TreeEntry, ghPrClientDetails GhPrClientDetails, sourcePath string, targetPath string, defaultBranch string) error {
+func GenerateSyncTreeEntriesForCommit(treeEntries *[]*github.TreeEntry, ghPrClientDetails GhPrClientDetails, sourcePath string, targetPath string, defaultBranch string, blockList []string) error {
 	sourcePathSHA, err := getDirecotyGitObjectSha(ghPrClientDetails, sourcePath, defaultBranch)
 
 	if sourcePathSHA == "" {
 		ghPrClientDetails.PrLogger.Infoln("Source directory wasn't found, assuming a deletion PR")
-		err := generateDeletionTreeEntries(&ghPrClientDetails, &targetPath, &defaultBranch, treeEntries)
+		err := generateDeletionTreeEntriesWithBlockList(&ghPrClientDetails, &targetPath, &defaultBranch, treeEntries, blockList)
 		if err != nil {
 			ghPrClientDetails.PrLogger.Errorf("Failed to build deletion tree: err=%s\n", err)
 			return err
+		}
+	} else if len(blockList) > 0 {
+		// When blockList is present, we cannot use the tree SHA shortcut because it would
+		// overwrite blocked files. Instead, create individual file tree entries.
+		sourceFilesSHAs := make(map[string]string)
+		targetFilesSHAs := make(map[string]string)
+		generateFlatMapfromFileTree(&ghPrClientDetails, &sourcePath, &sourcePath, &defaultBranch, sourceFilesSHAs)
+		generateFlatMapfromFileTree(&ghPrClientDetails, &targetPath, &targetPath, &defaultBranch, targetFilesSHAs)
+
+		// Create/update non-blocked source files in target
+		for filename, sha := range sourceFilesSHAs {
+			if isFileBlockedGh(filename, blockList) {
+				ghPrClientDetails.PrLogger.Debugf("Skipping blocked file %s (matched blockList pattern)", filename)
+				continue
+			}
+			fileSHA := sha
+			syncTreeEntry := github.TreeEntry{
+				Path: github.String(targetPath + "/" + filename),
+				Mode: github.String("100644"),
+				Type: github.String("blob"),
+				SHA:  github.String(fileSHA),
+			}
+			*treeEntries = append(*treeEntries, &syncTreeEntry)
+		}
+
+		// Delete non-blocked target files not present in source
+		for filename := range targetFilesSHAs {
+			if _, found := sourceFilesSHAs[filename]; !found {
+				if isFileBlockedGh(filename, blockList) {
+					ghPrClientDetails.PrLogger.Debugf("Skipping deletion of blocked file %s (matched blockList pattern)", filename)
+					continue
+				}
+				ghPrClientDetails.PrLogger.Debugf("%s -- was NOT found on %s, marking as a deletion!", filename, sourcePath)
+				fileDeleteTreeEntry := github.TreeEntry{
+					Path:    github.String(targetPath + "/" + filename),
+					Mode:    github.String("100644"),
+					Type:    github.String("blob"),
+					SHA:     nil,
+					Content: nil,
+				}
+				*treeEntries = append(*treeEntries, &fileDeleteTreeEntry)
+			}
 		}
 	} else {
 		syncTreeEntry := github.TreeEntry{
@@ -1119,6 +1162,47 @@ func GenerateSyncTreeEntriesForCommit(treeEntries *[]*github.TreeEntry, ghPrClie
 	}
 
 	return err
+}
+
+// isFileBlockedGh checks if a relative file path matches any blockList glob patterns (doublestar syntax).
+func isFileBlockedGh(relativePath string, blockList []string) bool {
+	for _, pattern := range blockList {
+		matched, err := doublestar.PathMatch(pattern, relativePath)
+		if err != nil {
+			log.Errorf("Invalid blockList glob pattern %q: %v", pattern, err)
+			continue
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+// generateDeletionTreeEntriesWithBlockList is like generateDeletionTreeEntries but skips blocked files.
+func generateDeletionTreeEntriesWithBlockList(ghPrClientDetails *GhPrClientDetails, path *string, branch *string, treeEntries *[]*github.TreeEntry, blockList []string) error {
+	if len(blockList) == 0 {
+		return generateDeletionTreeEntries(ghPrClientDetails, path, branch, treeEntries)
+	}
+	// Build flat file map then filter
+	filesSHAs := make(map[string]string)
+	rootPath := *path
+	generateFlatMapfromFileTree(ghPrClientDetails, path, &rootPath, branch, filesSHAs)
+	for filename := range filesSHAs {
+		if isFileBlockedGh(filename, blockList) {
+			ghPrClientDetails.PrLogger.Debugf("Skipping deletion of blocked file %s (matched blockList pattern)", filename)
+			continue
+		}
+		treeEntry := github.TreeEntry{
+			Path:    github.String(*path + "/" + filename),
+			Mode:    github.String("100644"),
+			Type:    github.String("blob"),
+			SHA:     nil,
+			Content: nil,
+		}
+		*treeEntries = append(*treeEntries, &treeEntry)
+	}
+	return nil
 }
 
 func createCommit(ghPrClientDetails GhPrClientDetails, treeEntries []*github.TreeEntry, defaultBranch string, commitMsg string) (*github.Commit, error) {

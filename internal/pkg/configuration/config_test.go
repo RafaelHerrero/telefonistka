@@ -78,3 +78,56 @@ func TestConfigurationParse(t *testing.T) {
 		t.Error(diff)
 	}
 }
+
+func TestConfigurationParseBlockList(t *testing.T) {
+	t.Parallel()
+
+	configurationFileContent, _ := os.ReadFile("tests/testConfigurationParsingBlockList.yaml")
+
+	config, err := ParseConfigFromYaml(string(configurationFileContent))
+	if err != nil {
+		t.Fatalf("config parsing failed: err=%s", err)
+	}
+
+	if config.PromotionPaths == nil {
+		t.Fatalf("config is missing PromotionPaths, %v", config.PromotionPaths)
+	}
+
+	expectedConfig := &Config{
+		PromotionPaths: []PromotionPath{
+			{
+				SourcePath: "local/",
+				PromotionPrs: []PromotionPr{
+					{
+						TargetDescription: "Dev",
+						TargetPaths: []string{
+							"dev/",
+						},
+						BlockList: []string{
+							"**/application.yaml",
+							"**/values-env.yaml",
+						},
+					},
+				},
+			},
+			{
+				SourcePath: "dev/",
+				PromotionPrs: []PromotionPr{
+					{
+						TargetDescription: "Staging",
+						TargetPaths: []string{
+							"staging/",
+						},
+						BlockList: []string{
+							"**/application.yaml",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if diff := deep.Equal(expectedConfig, config); diff != nil {
+		t.Error(diff)
+	}
+}

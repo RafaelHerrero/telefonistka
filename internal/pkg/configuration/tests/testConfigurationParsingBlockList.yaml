@@ -1,0 +1,19 @@
+promotionPaths:
+  - sourcePath: "local/"
+    promotionPrs:
+      - targetDescription: "Dev"
+        targetPaths:
+          - "dev/"
+        blockList:
+          - "**/application.yaml"
+          - "**/values-env.yaml"
+  - sourcePath: "dev/"
+    promotionPrs:
+      - targetDescription: "Staging"
+        targetPaths:
+          - "staging/"
+        blockList:
+          - "**/application.yaml"
+
+dryRunMode: false
+autoApprovePromotionPrs: false

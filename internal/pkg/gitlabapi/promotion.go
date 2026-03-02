@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/cenkalti/backoff/v4"
 	cfg "github.com/commercetools/telefonistka/internal/pkg/configuration"
 	"github.com/commercetools/telefonistka/internal/pkg/gitprovider"
@@ -81,6 +82,7 @@ type PromotionInstanceMetaData struct {
 	PerComponentSkippedTargetPaths map[string][]string
 	ComponentNames                 []string
 	AutoMerge                      bool
+	BlockList                      []string
 }
 
 type relevantComponent struct {
@@ -191,6 +193,7 @@ func generatePlanFromComponents(
 								ComponentNames:                 []string{componentToPromote.ComponentName},
 								PerComponentSkippedTargetPaths: map[string][]string{},
 								AutoMerge:                      componentToPromote.AutoMerge,
+								BlockList:                      ppr.BlockList,
 							},
 							ComputedSyncPaths: map[string]string{},
 						}
@@ -246,10 +249,12 @@ func getComponentConfig(ctx context.Context, provider gitprovider.GitProvider, o
 
 // generateSyncCommitActions creates CommitActions to sync files from source to target directory.
 // It handles create/update and delete operations.
+// blockList contains glob patterns (doublestar syntax) for files that should be skipped during sync.
 func generateSyncCommitActions(
 	ctx context.Context,
 	provider gitprovider.GitProvider,
 	owner, repo, sourcePath, targetPath, ref string,
+	blockList []string,
 	prLogger *log.Entry,
 ) ([]*gitprovider.CommitAction, error) {
 	// List source files recursively
@@ -280,6 +285,12 @@ func generateSyncCommitActions(
 		relativePath = strings.TrimPrefix(relativePath, "/")
 		sourceRelativePaths[relativePath] = struct{}{}
 
+		// Skip files matching blockList patterns
+		if isFileBlocked(relativePath, blockList) {
+			prLogger.Debugf("Skipping blocked file %s (matched blockList pattern)", relativePath)
+			continue
+		}
+
 		// Get file content from source
 		content, err := provider.GetFileContent(ctx, owner, repo, file.Path, ref)
 		if err != nil {
@@ -306,11 +317,16 @@ func generateSyncCommitActions(
 		})
 	}
 
-	// Delete files in target that are not in source
+	// Delete files in target that are not in source (but skip blocked files)
 	for _, file := range targetFiles {
 		relativePath := strings.TrimPrefix(file.Path, targetPath)
 		relativePath = strings.TrimPrefix(relativePath, "/")
 		if _, exists := sourceRelativePaths[relativePath]; !exists {
+			// Skip blocked files from deletion too — they should remain untouched in target
+			if isFileBlocked(relativePath, blockList) {
+				prLogger.Debugf("Skipping deletion of blocked file %s (matched blockList pattern)", relativePath)
+				continue
+			}
 			prLogger.Debugf("%s not found in source %s, marking for deletion", relativePath, sourcePath)
 			actions = append(actions, &gitprovider.CommitAction{
 				Action:   "delete",
@@ -388,7 +404,7 @@ func executePromotion(
 	// Collect all commit actions for this promotion
 	var allActions []*gitprovider.CommitAction
 	for target, source := range promotion.ComputedSyncPaths {
-		actions, err := generateSyncCommitActions(ctx, provider, owner, repo, source, target, defaultBranch, prLogger)
+		actions, err := generateSyncCommitActions(ctx, provider, owner, repo, source, target, defaultBranch, promotion.Metadata.BlockList, prLogger)
 		if err != nil {
 			prLogger.Errorf("Failed to generate sync actions for %s > %s: %v", source, target, err)
 			return err
@@ -903,6 +919,22 @@ func generateDriftComment(diffOutputMap map[string]string) string {
 func containsString(s []string, str string) bool {
 	for _, v := range s {
 		if v == str {
+			return true
+		}
+	}
+	return false
+}
+
+// isFileBlocked checks if a relative file path matches any of the blockList glob patterns.
+// Patterns use doublestar syntax (e.g. "**/application.yaml", "manifests/*.yaml").
+func isFileBlocked(relativePath string, blockList []string) bool {
+	for _, pattern := range blockList {
+		matched, err := doublestar.PathMatch(pattern, relativePath)
+		if err != nil {
+			log.Errorf("Invalid blockList glob pattern %q: %v", pattern, err)
+			continue
+		}
+		if matched {
 			return true
 		}
 	}

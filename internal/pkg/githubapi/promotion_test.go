@@ -707,3 +707,115 @@ func TestGeneratePromotionMetadataWithOutDesc(t *testing.T) {
 	)
 	generatePromotionPlanMetadataTestHelper(t, config, expectedPromotion, mockedHTTPClient)
 }
+
+func TestGeneratePromotionMetadataWithBlockList(t *testing.T) {
+	t.Parallel()
+	config := &cfg.Config{
+		PromotionPaths: []cfg.PromotionPath{
+			{
+				SourcePath: "local/",
+				PromotionPrs: []cfg.PromotionPr{
+					{
+						TargetDescription: "Dev",
+						TargetPaths: []string{
+							"dev/",
+						},
+						BlockList: []string{
+							"**/application.yaml",
+							"**/values-env.yaml",
+						},
+					},
+				},
+			},
+		},
+	}
+	expectedPromotion := map[string]PromotionInstance{
+		"local/>dev/": {
+			ComputedSyncPaths: map[string]string{
+				"dev/componentA": "local/componentA",
+			},
+			Metadata: PromotionInstanceMetaData{
+				SourcePath:                     "local/",
+				TargetDescription:              "Dev",
+				TargetPaths:                    []string{"dev/"},
+				PerComponentSkippedTargetPaths: map[string][]string{},
+				ComponentNames:                 []string{"componentA"},
+				BlockList: []string{
+					"**/application.yaml",
+					"**/values-env.yaml",
+				},
+			},
+		},
+	}
+	mockedHTTPClient := mock.NewMockedHTTPClient(
+		mock.WithRequestMatch(
+			mock.GetReposPullsFilesByOwnerByRepoByPullNumber,
+			[]github.CommitFile{
+				{Filename: github.String("local/componentA/manifests/values.yaml")},
+			},
+		),
+		mock.WithRequestMatchHandler(
+			mock.GetReposContentsByOwnerByRepoByPath,
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mock.WriteError(
+					w,
+					http.StatusNotFound,
+					"no *optional* in-component telefonistka config file",
+				)
+			}),
+		),
+	)
+	generatePromotionPlanMetadataTestHelper(t, config, expectedPromotion, mockedHTTPClient)
+}
+
+func TestIsFileBlockedGh(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		relativePath string
+		blockList    []string
+		expected     bool
+	}{
+		{
+			name:         "matches doublestar pattern",
+			relativePath: "ingress/application.yaml",
+			blockList:    []string{"**/application.yaml"},
+			expected:     true,
+		},
+		{
+			name:         "matches top-level file",
+			relativePath: "application.yaml",
+			blockList:    []string{"**/application.yaml"},
+			expected:     true,
+		},
+		{
+			name:         "does not match unrelated file",
+			relativePath: "manifests/values.yaml",
+			blockList:    []string{"**/application.yaml"},
+			expected:     false,
+		},
+		{
+			name:         "empty blockList",
+			relativePath: "application.yaml",
+			blockList:    []string{},
+			expected:     false,
+		},
+		{
+			name:         "nil blockList",
+			relativePath: "application.yaml",
+			blockList:    nil,
+			expected:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := isFileBlockedGh(tt.relativePath, tt.blockList)
+			if result != tt.expected {
+				t.Errorf("isFileBlockedGh(%q, %v) = %v, want %v", tt.relativePath, tt.blockList, result, tt.expected)
+			}
+		})
+	}
+}
