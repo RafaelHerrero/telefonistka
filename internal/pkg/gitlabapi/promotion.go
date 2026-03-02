@@ -504,8 +504,7 @@ func mergePrWithRetry(
 ) error {
 	operation := func() error {
 		err := provider.MergePullRequest(ctx, owner, repo, mrNumber, &gitprovider.MergeOptions{
-			CommitMessage: fmt.Sprintf("Auto-merge promotion: %s -> %s", components, targetDescription),
-			MergeMethod:   gitprovider.MergeMethodMerge,
+			MergeMethod: gitprovider.MergeMethodMerge,
 		})
 		if err != nil {
 			errMsg := err.Error()
