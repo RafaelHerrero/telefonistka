@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"time"
 
+	"github.com/commercetools/telefonistka/internal/pkg/gitlabapi"
 	"github.com/commercetools/telefonistka/internal/pkg/gitprovider"
 	_ "github.com/commercetools/telefonistka/internal/pkg/gitprovider/gitlab"
 	log "github.com/sirupsen/logrus"
@@ -93,15 +95,16 @@ func buildPushEvent() (gitprovider.Event, error) {
 	owner, repo := parseProjectPath(projectPath)
 
 	event := &GitLabCIPushEvent{
-		ProjectPath:  projectPath,
-		Owner:        owner,
-		Repo:         repo,
-		CommitSHA:    os.Getenv("CI_COMMIT_SHA"),
-		BeforeSHA:    os.Getenv("CI_COMMIT_BEFORE_SHA"),
-		RefName:      os.Getenv("CI_COMMIT_REF_NAME"),
-		CommitAuthor: os.Getenv("GITLAB_USER_LOGIN"),
-		ServerURL:    os.Getenv("CI_SERVER_URL"),
-		ProjectID:    os.Getenv("CI_PROJECT_ID"),
+		ProjectPath:   projectPath,
+		Owner:         owner,
+		Repo:          repo,
+		CommitSHA:     os.Getenv("CI_COMMIT_SHA"),
+		BeforeSHA:     os.Getenv("CI_COMMIT_BEFORE_SHA"),
+		RefName:       os.Getenv("CI_COMMIT_REF_NAME"),
+		CommitAuthor:  os.Getenv("GITLAB_USER_LOGIN"),
+		ServerURL:     os.Getenv("CI_SERVER_URL"),
+		ProjectID:     os.Getenv("CI_PROJECT_ID"),
+		CommitMessage: os.Getenv("CI_COMMIT_MESSAGE"),
 	}
 
 	log.Infof("Built push event: ref=%s in %s", event.RefName, projectPath)
@@ -197,15 +200,16 @@ func (e *GitLabCIMergeRequestEvent) Sender() string {
 
 // GitLabCIPushEvent implements gitprovider.PushEvent
 type GitLabCIPushEvent struct {
-	ProjectPath  string
-	Owner        string
-	Repo         string
-	CommitSHA    string
-	BeforeSHA    string
-	RefName      string
-	CommitAuthor string
-	ServerURL    string
-	ProjectID    string
+	ProjectPath   string
+	Owner         string
+	Repo          string
+	CommitSHA     string
+	BeforeSHA     string
+	RefName       string
+	CommitAuthor  string
+	ServerURL     string
+	ProjectID     string
+	CommitMessage string
 }
 
 func (e *GitLabCIPushEvent) Type() gitprovider.EventType {
@@ -311,34 +315,119 @@ func ProcessEventInCI(ctx context.Context) error {
 func handleMREventInCI(ctx context.Context, event *GitLabCIMergeRequestEvent, provider gitprovider.GitProvider) error {
 	log.Infof("Processing MR #%d in CI mode", event.MRNumber)
 
-	// Add a comment to show Telefonistka is working
-	comment := fmt.Sprintf("🤖 Telefonistka CI Check\n\nProcessing merge request from GitLab CI pipeline.\n\n- Pipeline: %s\n- Commit: %s",
-		os.Getenv("CI_PIPELINE_URL"),
-		event.HeadSHA[:8],
-	)
+	prLogger := log.WithFields(log.Fields{
+		"repo":       event.ProjectPath,
+		"mrNumber":   event.MRNumber,
+		"event_type": "merge_request",
+		"mode":       "ci",
+	})
 
-	_, err := provider.CommentOnPullRequest(
-		ctx,
-		event.Owner,
-		event.Repo,
-		event.MRNumber,
-		comment,
-	)
+	repoURL := fmt.Sprintf("%s/%s", event.ServerURL, event.ProjectPath)
+	details := gitlabapi.ProviderClientDetails{
+		Ctx:      ctx,
+		Provider: provider,
+		Owner:    event.Owner,
+		Repo:     event.Repo,
+		PrNumber: event.MRNumber,
+		PrSHA:    event.HeadSHA,
+		Ref:      event.SourceBranch,
+		RepoURL:  repoURL,
+		PrAuthor: event.Author,
+		PrLogger: prLogger,
+	}
 
+	// Run drift detection
+	err := gitlabapi.DetectDrift(ctx, details)
 	if err != nil {
-		return fmt.Errorf("failed to add comment: %v", err)
+		prLogger.Errorf("Drift detection failed: %v", err)
+		return err
 	}
 
 	log.Info("Successfully processed MR event in CI mode")
 	return nil
 }
 
-// handlePushEventInCI processes push events in CI mode
+// handlePushEventInCI processes push events in CI mode.
+// When a push is to the default branch, it triggers the promotion workflow.
+// If the push is a merge commit, it extracts the MR number and uses MR-based
+// promotion (with full MR context: files, labels, body metadata).
+// Otherwise, it falls back to comparing before/after SHAs.
 func handlePushEventInCI(ctx context.Context, event *GitLabCIPushEvent, provider gitprovider.GitProvider) error {
 	log.Infof("Processing push event for ref %s in CI mode", event.RefName)
 
-	// Push events in CI mode - log only for now
-	log.Infof("Push to %s: %s -> %s", event.RefName, event.BeforeSHA[:8], event.CommitSHA[:8])
+	// Get default branch to check if this push is to it
+	defaultBranch, err := provider.GetDefaultBranch(ctx, event.Owner, event.Repo)
+	if err != nil {
+		log.Warnf("Failed to get default branch, falling back to 'main': %v", err)
+		defaultBranch = "main"
+	}
 
-	return nil
+	// Only process pushes to default branch
+	if event.RefName != defaultBranch {
+		log.Infof("Push to %s (not default branch %s), skipping promotion", event.RefName, defaultBranch)
+		return nil
+	}
+
+	log.Infof("Push to default branch %s: %s -> %s, starting promotion workflow", defaultBranch, event.BeforeSHA[:8], event.CommitSHA[:8])
+
+	// Try to extract MR number from merge commit message
+	// GitLab merge commits contain "See merge request group/project!123"
+	mrNumber := extractMRNumberFromCommitMessage(event.CommitMessage)
+
+	prLogger := log.WithFields(log.Fields{
+		"repo":      event.ProjectPath,
+		"ref":       event.RefName,
+		"beforeSHA": event.BeforeSHA[:8],
+		"afterSHA":  event.CommitSHA[:8],
+		"mrNumber":  mrNumber,
+	})
+
+	if mrNumber > 0 {
+		// Use MR-based promotion (has full context: changed files, labels, body metadata)
+		prLogger.Infof("Detected merge commit from MR !%d, using MR-based promotion", mrNumber)
+
+		repoURL := fmt.Sprintf("%s/%s", event.ServerURL, event.ProjectPath)
+		details := gitlabapi.ProviderClientDetails{
+			Ctx:      ctx,
+			Provider: provider,
+			Owner:    event.Owner,
+			Repo:     event.Repo,
+			PrNumber: mrNumber,
+			Ref:      event.RefName,
+			RepoURL:  repoURL,
+			PrAuthor: event.CommitAuthor,
+			PrLogger: prLogger,
+		}
+
+		return gitlabapi.HandleMergedMR(ctx, details, nil, defaultBranch)
+	}
+
+	// Fallback: use commit comparison for non-merge pushes
+	prLogger.Info("No MR reference in commit message, using commit-based promotion")
+	repoURL := fmt.Sprintf("%s/%s", event.ServerURL, event.ProjectPath)
+	details := gitlabapi.ProviderClientDetails{
+		Ctx:      ctx,
+		Provider: provider,
+		Owner:    event.Owner,
+		Repo:     event.Repo,
+		Ref:      event.RefName,
+		RepoURL:  repoURL,
+		PrAuthor: event.CommitAuthor,
+		PrLogger: prLogger,
+	}
+
+	return gitlabapi.HandlePushPromotion(ctx, details, event.BeforeSHA, event.CommitSHA, defaultBranch)
+}
+
+// extractMRNumberFromCommitMessage parses the MR IID from a GitLab merge commit message.
+// GitLab merge commits contain "See merge request group/project!123".
+func extractMRNumberFromCommitMessage(message string) int {
+	re := regexp.MustCompile(`See merge request .+!(\d+)`)
+	matches := re.FindStringSubmatch(message)
+	if len(matches) == 2 {
+		if n, err := strconv.Atoi(matches[1]); err == nil {
+			return n
+		}
+	}
+	return 0
 }

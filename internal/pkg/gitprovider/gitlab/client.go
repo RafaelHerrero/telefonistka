@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -139,9 +140,13 @@ func (g *GitLabProvider) GetFileContent(ctx context.Context, owner, repo, path, 
 		return nil, fmt.Errorf("failed to get file content: %w", err)
 	}
 
-	// GitLab returns base64-encoded content by default
-	// The library automatically decodes it
-	return []byte(file.Content), nil
+	// GitLab returns base64-encoded content — decode it
+	decoded, err := base64.StdEncoding.DecodeString(file.Content)
+	if err != nil {
+		// If decode fails, assume it's already plain text
+		return []byte(file.Content), nil
+	}
+	return decoded, nil
 }
 
 // GetDirectoryContent returns the content of a directory

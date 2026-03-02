@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
+	cfg "github.com/commercetools/telefonistka/internal/pkg/configuration"
 	"github.com/commercetools/telefonistka/internal/pkg/gitprovider"
 	_ "github.com/commercetools/telefonistka/internal/pkg/gitprovider/gitlab"
 	"github.com/commercetools/telefonistka/internal/pkg/prometheus"
@@ -102,8 +104,30 @@ func ReciveGitLabWebhook(
 
 	prometheus.InstrumentWebhookHit("successful")
 
+	// Create approver provider if GITLAB_APPROVER_TOKEN is set
+	var approverProvider gitprovider.GitProvider
+	if approverToken := os.Getenv("GITLAB_APPROVER_TOKEN"); approverToken != "" {
+		approverCacheKey := fmt.Sprintf("gitlab-approver:%s", gitlabURL)
+		if cached, ok := approverProviderCache.Get(approverCacheKey); ok {
+			approverProvider = cached
+		} else {
+			approverConfig := &gitprovider.ProviderConfig{
+				Type:    gitprovider.ProviderTypeGitLab,
+				Token:   approverToken,
+				BaseURL: gitlabURL,
+			}
+			approverProvider, err = factory.Create(approverConfig)
+			if err != nil {
+				log.Warnf("Failed to create approver provider: %v (auto-approve will be disabled)", err)
+			} else {
+				approverProviderCache.Add(approverCacheKey, approverProvider)
+				log.Info("Created approver GitLab provider")
+			}
+		}
+	}
+
 	// Handle event asynchronously
-	go HandleGitLabEvent(event, provider, nil, mainProviderCache, approverProviderCache)
+	go HandleGitLabEvent(event, provider, approverProvider, mainProviderCache, approverProviderCache)
 
 	return nil
 }
@@ -177,22 +201,34 @@ func handleMergeRequestEvent(
 		Labels:   pr.Labels,
 	}
 
+	// Set commit status to pending at start
+	setCommitStatus(ctx, mainProvider, owner, repoName, pr.HeadSHA, "pending", prLogger)
+
+	var processingErr error
+	defer func() {
+		if processingErr != nil {
+			setCommitStatus(ctx, mainProvider, owner, repoName, pr.HeadSHA, "error", prLogger)
+			return
+		}
+		setCommitStatus(ctx, mainProvider, owner, repoName, pr.HeadSHA, "success", prLogger)
+	}()
+
 	switch action {
 	case "opened", "synchronize", "update":
 		// Check for drift, add warnings
 		prLogger.Info("MR opened or updated - checking for drift")
-		err := handleMROpenedOrUpdated(ctx, clientDetails)
-		if err != nil {
-			prLogger.Errorf("Error handling MR opened/updated: %v", err)
+		processingErr = handleMROpenedOrUpdated(ctx, clientDetails)
+		if processingErr != nil {
+			prLogger.Errorf("Error handling MR opened/updated: %v", processingErr)
 		}
 
 	case "merged", "closed":
 		if pr.Merged {
 			// Handle promotion workflow
 			prLogger.Info("MR merged - starting promotion workflow")
-			err := handleMRMerged(ctx, clientDetails, approverProvider)
-			if err != nil {
-				prLogger.Errorf("Error handling MR merged: %v", err)
+			processingErr = handleMRMerged(ctx, clientDetails, approverProvider, "")
+			if processingErr != nil {
+				prLogger.Errorf("Error handling MR merged: %v", processingErr)
 			}
 		} else {
 			prLogger.Info("MR closed without merge - no action needed")
@@ -254,12 +290,22 @@ func handleCommentEvent(
 	}
 }
 
-// handleMROpenedOrUpdated checks for drift and adds warnings
+// handleMROpenedOrUpdated checks for drift between source and target directories and warns on the MR
 func handleMROpenedOrUpdated(ctx context.Context, details ProviderClientDetails) error {
-	// TODO: Implement drift detection
-	// For now, just log
-	details.PrLogger.Info("Drift detection not yet implemented for GitLab")
-	return nil
+	details.PrLogger.Info("Running drift detection")
+	return DetectDrift(ctx, details)
+}
+
+// HandleMergedMR is the exported entry point for the promotion workflow after an MR is merged.
+// It can be called from both the webhook handler and the CI push handler.
+// If defaultBranch is empty, it will be fetched from the API.
+func HandleMergedMR(
+	ctx context.Context,
+	details ProviderClientDetails,
+	approverProvider gitprovider.GitProvider,
+	defaultBranch string,
+) error {
+	return handleMRMerged(ctx, details, approverProvider, defaultBranch)
 }
 
 // handleMRMerged handles the promotion workflow when an MR is merged
@@ -267,30 +313,108 @@ func handleMRMerged(
 	ctx context.Context,
 	details ProviderClientDetails,
 	approverProvider gitprovider.GitProvider,
+	defaultBranch string,
 ) error {
 	details.PrLogger.Info("Starting promotion workflow for merged MR")
 
-	// TODO: Implement promotion logic using the provider abstraction
-	// This would be similar to githubapi.handleMergedPrEvent but using GitProvider interface
+	// Get default branch if not provided
+	if defaultBranch == "" {
+		var err error
+		defaultBranch, err = details.Provider.GetDefaultBranch(ctx, details.Owner, details.Repo)
+		if err != nil {
+			details.PrLogger.Errorf("Failed to get default branch: %v", err)
+			return err
+		}
+	}
 
-	// For now, just create a test comment to verify webhook works
-	comment := fmt.Sprintf("🎉 MR #%d was merged! Promotion workflow would start here.", details.PrNumber)
-
-	_, err := details.Provider.CommentOnPullRequest(
-		ctx,
-		details.Owner,
-		details.Repo,
-		details.PrNumber,
-		comment,
-	)
-
+	// Load telefonistka.yaml from repo root
+	config, err := getRepoConfig(ctx, details.Provider, details.Owner, details.Repo, defaultBranch, details.PrLogger)
 	if err != nil {
-		details.PrLogger.Errorf("Failed to add comment: %v", err)
+		_, _ = details.Provider.CommentOnPullRequest(ctx, details.Owner, details.Repo, details.PrNumber,
+			fmt.Sprintf("Failed to get configuration\n```\n%s\n```\n", err))
 		return err
 	}
 
-	details.PrLogger.Info("Promotion workflow completed successfully")
+	// Fetch the MR to get its body for metadata chain parsing
+	mr, err := details.Provider.GetPullRequest(ctx, details.Owner, details.Repo, details.PrNumber)
+	if err != nil {
+		details.PrLogger.Warnf("Failed to fetch MR body for metadata parsing: %v", err)
+	}
+
+	// Parse existing metadata from the MR body (enables chained promotions)
+	var existingMetadata *prMetadata
+	if mr != nil && mr.Body != "" {
+		existingMetadata = parsePrMetadata(mr.Body)
+		if existingMetadata != nil {
+			details.PrLogger.Infof("Found promotion metadata chain in MR body (original author: %s)", existingMetadata.OriginalPrAuthor)
+		}
+	}
+
+	// List changed files in the merged MR
+	mrFiles, err := details.Provider.ListPullRequestFiles(ctx, details.Owner, details.Repo, details.PrNumber)
+	if err != nil {
+		details.PrLogger.Errorf("Failed to list MR files: %v", err)
+		return err
+	}
+
+	changedFiles := make([]string, 0, len(mrFiles))
+	for _, f := range mrFiles {
+		changedFiles = append(changedFiles, f.Filename)
+	}
+
+	// Generate promotion plan
+	promotions, err := generatePromotionPlan(ctx, details.Provider, details.Owner, details.Repo, changedFiles, details.Labels, config, defaultBranch, details.PrLogger)
+	if err != nil {
+		details.PrLogger.Errorf("Failed to generate promotion plan: %v", err)
+		return err
+	}
+
+	if len(promotions) == 0 {
+		details.PrLogger.Info("No promotions needed for this MR")
+		return nil
+	}
+
+	// Dry-run mode: comment the plan instead of executing
+	if config.DryRunMode {
+		commentPromotionPlan(ctx, details.Provider, details.Owner, details.Repo, details.PrNumber, promotions, details.PrLogger)
+		return nil
+	}
+
+	// Determine effective author (from metadata chain or current MR)
+	effectiveAuthor := details.PrAuthor
+	if existingMetadata != nil && existingMetadata.OriginalPrAuthor != "" {
+		effectiveAuthor = existingMetadata.OriginalPrAuthor
+	}
+
+	// Execute each promotion
+	for _, promotion := range promotions {
+		err := executePromotion(ctx, details.Provider, approverProvider, details.Owner, details.Repo, defaultBranch,
+			details.PrNumber, details.Ref, effectiveAuthor, details.RepoURL, config, promotion, existingMetadata, details.PrLogger)
+		if err != nil {
+			details.PrLogger.Errorf("Promotion failed for %s: %v", promotion.Metadata.SourcePath, err)
+			_, _ = details.Provider.CommentOnPullRequest(ctx, details.Owner, details.Repo, details.PrNumber,
+				fmt.Sprintf("Promotion failed for `%s`: %v", promotion.Metadata.SourcePath, err))
+		}
+	}
+
+	details.PrLogger.Info("Promotion workflow completed")
 	return nil
+}
+
+// getRepoConfig loads and parses telefonistka.yaml from the repo root
+func getRepoConfig(ctx context.Context, provider gitprovider.GitProvider, owner, repo, ref string, prLogger *log.Entry) (*cfg.Config, error) {
+	content, err := provider.GetFileContent(ctx, owner, repo, "telefonistka.yaml", ref)
+	if err != nil {
+		prLogger.Errorf("Could not get in-repo configuration: %v", err)
+		return nil, err
+	}
+
+	config, err := cfg.ParseConfigFromYaml(string(content))
+	if err != nil {
+		prLogger.Errorf("Failed to parse configuration: %v", err)
+		return nil, err
+	}
+	return config, nil
 }
 
 // handleBotCommands processes bot commands from MR comments
@@ -300,9 +424,40 @@ func handleBotCommands(
 	commentBody string,
 	sender string,
 ) error {
-	// TODO: Implement bot command handling
-	// Examples: /promote, /sync, /approve, etc.
-	details.PrLogger.Debugf("Bot command handling not yet implemented: %s", commentBody)
+	trimmed := strings.TrimSpace(commentBody)
+
+	if trimmed == "/retrigger" {
+		details.PrLogger.Infof("Retrigger requested by %s", sender)
+		return handleRetrigger(ctx, details)
+	}
+
+	return nil
+}
+
+// handleRetrigger re-runs drift detection on an MR, as if it was just opened/updated
+func handleRetrigger(ctx context.Context, details ProviderClientDetails) error {
+	// Fetch MR to get full context (HeadSHA, branch, labels, author)
+	mr, err := details.Provider.GetPullRequest(ctx, details.Owner, details.Repo, details.PrNumber)
+	if err != nil {
+		details.PrLogger.Errorf("Failed to fetch MR for retrigger: %v", err)
+		return err
+	}
+
+	details.PrSHA = mr.HeadSHA
+	details.Ref = mr.HeadRef
+	details.PrAuthor = mr.Author
+	details.Labels = mr.Labels
+
+	// Set commit status to pending
+	setCommitStatus(ctx, details.Provider, details.Owner, details.Repo, mr.HeadSHA, "pending", details.PrLogger)
+
+	err = DetectDrift(ctx, details)
+	if err != nil {
+		setCommitStatus(ctx, details.Provider, details.Owner, details.Repo, mr.HeadSHA, "error", details.PrLogger)
+		return err
+	}
+
+	setCommitStatus(ctx, details.Provider, details.Owner, details.Repo, mr.HeadSHA, "success", details.PrLogger)
 	return nil
 }
 
