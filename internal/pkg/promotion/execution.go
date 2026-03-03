@@ -274,8 +274,8 @@ func GeneratePromotionPrBody(prNumber int, components string, promotion Promotio
 		} else {
 			prRef = fmt.Sprintf("%s%d", prLinkPrefix, k)
 		}
-		body.WriteString(fmt.Sprintf("%s↘️  %s  `%s` ➡️ %s`%s`  \n",
-			strings.Repeat(indent, i), prRef, meta.SourcePath, strings.Repeat(indent, i), tp))
+		body.WriteString(fmt.Sprintf("%s↘️  %s  `%s` ➡️  \n%s`%s`  \n",
+			strings.Repeat(indent, i), prRef, meta.SourcePath, strings.Repeat(indent, i+1), tp))
 	}
 
 	if len(promotion.Metadata.PerComponentSkippedTargetPaths) > 0 {

@@ -22,6 +22,8 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/commercetools/telefonistka/internal/pkg/argocd"
 	cfg "github.com/commercetools/telefonistka/internal/pkg/configuration"
+	"github.com/commercetools/telefonistka/internal/pkg/gitprovider"
+	ghprovider "github.com/commercetools/telefonistka/internal/pkg/gitprovider/github"
 	prom "github.com/commercetools/telefonistka/internal/pkg/prometheus"
 	promlib "github.com/commercetools/telefonistka/internal/pkg/promotion"
 	"github.com/google/go-github/v62/github"
@@ -62,6 +64,11 @@ type GhPrClientDetails struct {
 }
 
 type prMetadata = promlib.PrMetadata
+
+// toProvider wraps the legacy GhClientPair into the GitProvider interface.
+func (g *GhPrClientDetails) toProvider() gitprovider.GitProvider {
+	return ghprovider.NewGitHubProviderFromClients(g.GhClientPair.v3Client, g.GhClientPair.v4Client)
+}
 
 func (ghPrClientDetails *GhPrClientDetails) getPrMetadata(prBody string) {
 	prMetadataRegex := regexp.MustCompile(`<!--\|.*\|(.*)\|-->`)
@@ -848,7 +855,7 @@ func tryMergePR(details GhPrClientDetails, number int) error {
 }
 
 func isMergeErrorRetryable(errMessage string) bool {
-	return strings.Contains(errMessage, "405") && strings.Contains(errMessage, "try the merge again")
+	return promlib.IsMergeErrorRetryable(errMessage)
 }
 
 func (p GhPrClientDetails) CommentOnPr(commentBody string) error {
@@ -1143,6 +1150,25 @@ func generateDeletionTreeEntriesWithBlockList(ghPrClientDetails *GhPrClientDetai
 	return nil
 }
 
+func generateFlatMapfromFileTree(ghPrClientDetails *GhPrClientDetails, workingPath *string, rootPath *string, branch *string, listOfFiles map[string]string) {
+	getContentOpts := &github.RepositoryContentGetOptions{
+		Ref: *branch,
+	}
+	_, directoryContent, resp, _ := ghPrClientDetails.GhClientPair.v3Client.Repositories.GetContents(ghPrClientDetails.Ctx, ghPrClientDetails.Owner, ghPrClientDetails.Repo, *workingPath, getContentOpts)
+	prom.InstrumentGhCall(resp)
+	for _, elementInDir := range directoryContent {
+		switch *elementInDir.Type {
+		case "file":
+			relativeName := strings.TrimPrefix(*elementInDir.Path, *rootPath+"/")
+			listOfFiles[relativeName] = *elementInDir.SHA
+		case "dir":
+			generateFlatMapfromFileTree(ghPrClientDetails, elementInDir.Path, rootPath, branch, listOfFiles)
+		default:
+			ghPrClientDetails.PrLogger.Infof("Ignoring type %s for path %s", *elementInDir.Type, *elementInDir.Path)
+		}
+	}
+}
+
 func createCommit(ghPrClientDetails GhPrClientDetails, treeEntries []*github.TreeEntry, defaultBranch string, commitMsg string) (*github.Commit, error) {
 	// To avoid cloning the repo locally, I'm using GitHub low level GIT Tree API to sync the source folder "over" the target folders
 	// This works by getting the source dir git object SHA, and overwriting(Git.CreateTree) the target directory git object SHA with the source's SHA.
@@ -1393,16 +1419,8 @@ func ApprovePr(approverClient *github.Client, ghPrClientDetails GhPrClientDetail
 }
 
 func GetInRepoConfig(ghPrClientDetails GhPrClientDetails, defaultBranch string) (*cfg.Config, error) {
-	inRepoConfigFileContentString, _, err := GetFileContent(ghPrClientDetails, defaultBranch, "telefonistka.yaml")
-	if err != nil {
-		ghPrClientDetails.PrLogger.Errorf("Could not get in-repo configuration: err=%s\n", err)
-		inRepoConfigFileContentString = ""
-	}
-	c, err := cfg.ParseConfigFromYaml(inRepoConfigFileContentString)
-	if err != nil {
-		ghPrClientDetails.PrLogger.Errorf("Failed to parse configuration: err=%s\n", err)
-	}
-	return c, err
+	return promlib.GetRepoConfig(ghPrClientDetails.Ctx, ghPrClientDetails.toProvider(),
+		ghPrClientDetails.Owner, ghPrClientDetails.Repo, defaultBranch, ghPrClientDetails.PrLogger)
 }
 
 func GetFileContent(ghPrClientDetails GhPrClientDetails, branch string, filePath string) (string, int, error) {

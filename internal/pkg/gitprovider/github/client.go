@@ -22,6 +22,12 @@ type GitHubProvider struct {
 	lastResponse *gitprovider.APIResponse
 }
 
+// NewGitHubProviderFromClients creates a GitHubProvider from existing REST and GraphQL clients.
+// This is used by the githubapi package to wrap legacy GhClientPair into the provider interface.
+func NewGitHubProviderFromClients(v3Client *github.Client, v4Client *githubv4.Client) *GitHubProvider {
+	return &GitHubProvider{v3Client: v3Client, v4Client: v4Client}
+}
+
 // NewGitHubProvider creates a new GitHub provider instance
 func NewGitHubProvider(config *gitprovider.ProviderConfig) (*GitHubProvider, error) {
 	provider := &GitHubProvider{

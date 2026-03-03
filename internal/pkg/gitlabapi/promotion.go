@@ -102,7 +102,8 @@ func DetectDrift(ctx context.Context, details ProviderClientDetails) error {
 	for _, promotion := range promotions {
 		details.PrLogger.Debugf("Checking drift for %s", promotion.Metadata.SourcePath)
 		for target, source := range promotion.ComputedSyncPaths {
-			hasDiff, diffOutput, err := prom.CompareRepoDirectories(ctx, details.Provider, details.Owner, details.Repo, source, target, defaultBranch, details.RepoURL, details.PrLogger)
+			blamePrefix := fmt.Sprintf("%s/-/blame/HEAD", details.RepoURL)
+			hasDiff, diffOutput, err := prom.CompareRepoDirectories(ctx, details.Provider, details.Owner, details.Repo, source, target, defaultBranch, blamePrefix, details.PrLogger)
 			if err != nil {
 				details.PrLogger.Warnf("Error comparing %s vs %s: %v", source, target, err)
 				continue

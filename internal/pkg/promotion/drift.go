@@ -17,7 +17,7 @@ import (
 func CompareRepoDirectories(
 	ctx context.Context,
 	provider gitprovider.GitProvider,
-	owner, repo, sourcePath, targetPath, ref, repoURL string,
+	owner, repo, sourcePath, targetPath, ref, blameURLPrefix string,
 	prLogger *log.Entry,
 ) (bool, string, error) {
 	sourceFiles, err := ListFilesRecursive(ctx, provider, owner, repo, sourcePath, ref)
@@ -99,10 +99,10 @@ func CompareRepoDirectories(
 
 	diffOutput.WriteString("\n```\n")
 
-	if len(filesWithDiff) > 0 && repoURL != "" {
+	if len(filesWithDiff) > 0 && blameURLPrefix != "" {
 		diffOutput.WriteString("\n### Blame Links:\n")
 		for _, f := range filesWithDiff {
-			blameURL := fmt.Sprintf("%s/-/blame/HEAD/%s", repoURL, f)
+			blameURL := fmt.Sprintf("%s/%s", blameURLPrefix, f)
 			diffOutput.WriteString(fmt.Sprintf("- [%s](%s)\n", f, blameURL))
 		}
 	}
