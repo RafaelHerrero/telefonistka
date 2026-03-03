@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	cfg "github.com/commercetools/telefonistka/internal/pkg/configuration"
+	promlib "github.com/commercetools/telefonistka/internal/pkg/promotion"
 	"github.com/go-test/deep"
 	"github.com/google/go-github/v62/github"
 	"github.com/migueleliasweb/go-github-mock/src/mock"
@@ -812,9 +813,9 @@ func TestIsFileBlockedGh(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := isFileBlockedGh(tt.relativePath, tt.blockList)
+			result := promlib.IsFileBlocked(tt.relativePath, tt.blockList)
 			if result != tt.expected {
-				t.Errorf("isFileBlockedGh(%q, %v) = %v, want %v", tt.relativePath, tt.blockList, result, tt.expected)
+				t.Errorf("promlib.IsFileBlocked(%q, %v) = %v, want %v", tt.relativePath, tt.blockList, result, tt.expected)
 			}
 		})
 	}

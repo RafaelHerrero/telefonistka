@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	cfg "github.com/commercetools/telefonistka/internal/pkg/configuration"
 	"github.com/commercetools/telefonistka/internal/pkg/gitprovider"
+	prom "github.com/commercetools/telefonistka/internal/pkg/promotion"
 	_ "github.com/commercetools/telefonistka/internal/pkg/gitprovider/gitlab"
 	"github.com/commercetools/telefonistka/internal/pkg/prometheus"
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -328,7 +328,7 @@ func handleMRMerged(
 	}
 
 	// Load telefonistka.yaml from repo root
-	config, err := getRepoConfig(ctx, details.Provider, details.Owner, details.Repo, defaultBranch, details.PrLogger)
+	config, err := prom.GetRepoConfig(ctx, details.Provider, details.Owner, details.Repo, defaultBranch, details.PrLogger)
 	if err != nil {
 		_, _ = details.Provider.CommentOnPullRequest(ctx, details.Owner, details.Repo, details.PrNumber,
 			fmt.Sprintf("Failed to get configuration\n```\n%s\n```\n", err))
@@ -344,7 +344,7 @@ func handleMRMerged(
 	// Parse existing metadata from the MR body (enables chained promotions)
 	var existingMetadata *prMetadata
 	if mr != nil && mr.Body != "" {
-		existingMetadata = parsePrMetadata(mr.Body)
+		existingMetadata = prom.ParsePrMetadata(mr.Body)
 		if existingMetadata != nil {
 			details.PrLogger.Infof("Found promotion metadata chain in MR body (original author: %s)", existingMetadata.OriginalPrAuthor)
 		}
@@ -399,22 +399,6 @@ func handleMRMerged(
 
 	details.PrLogger.Info("Promotion workflow completed")
 	return nil
-}
-
-// getRepoConfig loads and parses telefonistka.yaml from the repo root
-func getRepoConfig(ctx context.Context, provider gitprovider.GitProvider, owner, repo, ref string, prLogger *log.Entry) (*cfg.Config, error) {
-	content, err := provider.GetFileContent(ctx, owner, repo, "telefonistka.yaml", ref)
-	if err != nil {
-		prLogger.Errorf("Could not get in-repo configuration: %v", err)
-		return nil, err
-	}
-
-	config, err := cfg.ParseConfigFromYaml(string(content))
-	if err != nil {
-		prLogger.Errorf("Failed to parse configuration: %v", err)
-		return nil, err
-	}
-	return config, nil
 }
 
 // handleBotCommands processes bot commands from MR comments

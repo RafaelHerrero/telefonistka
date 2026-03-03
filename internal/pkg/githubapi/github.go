@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"crypto/sha1" //nolint:gosec // G505: Blocklisted import crypto/sha1: weak cryptographic primitive (gosec), this is not a cryptographic use case
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,11 +19,11 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"github.com/cenkalti/backoff/v4"
 	"github.com/commercetools/telefonistka/internal/pkg/argocd"
 	cfg "github.com/commercetools/telefonistka/internal/pkg/configuration"
 	prom "github.com/commercetools/telefonistka/internal/pkg/prometheus"
+	promlib "github.com/commercetools/telefonistka/internal/pkg/promotion"
 	"github.com/google/go-github/v62/github"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/nao1215/markdown"
@@ -45,10 +42,7 @@ type DiffCommentData struct {
 	BranchName                string
 }
 
-type promotionInstanceMetaData struct {
-	SourcePath  string   `json:"sourcePath"`
-	TargetPaths []string `json:"targetPaths"`
-}
+type promotionInstanceMetaData = promlib.PromotionPathMetadata
 
 type GhPrClientDetails struct {
 	GhClientPair *GhClientPair
@@ -67,20 +61,7 @@ type GhPrClientDetails struct {
 	PrMetadata    prMetadata
 }
 
-type prMetadata struct {
-	OriginalPrAuthor          string                            `json:"originalPrAuthor"`
-	OriginalPrNumber          int                               `json:"originalPrNumber"`
-	PromotedPaths             []string                          `json:"promotedPaths"`
-	PreviousPromotionMetadata map[int]promotionInstanceMetaData `json:"previousPromotionPaths"`
-}
-
-func (pm prMetadata) serialize() (string, error) {
-	pmJson, err := json.Marshal(pm)
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(pmJson), nil
-}
+type prMetadata = promlib.PrMetadata
 
 func (ghPrClientDetails *GhPrClientDetails) getPrMetadata(prBody string) {
 	prMetadataRegex := regexp.MustCompile(`<!--\|.*\|(.*)\|-->`)
@@ -757,7 +738,7 @@ func handleMergedPrEvent(ghPrClientDetails GhPrClientDetails, prApproverGithubCl
 				return err
 			}
 
-			newBranchName := generateSafePromotionBranchName(ghPrClientDetails.PrNumber, ghPrClientDetails.Ref, promotion.Metadata.TargetPaths)
+			newBranchName := promlib.GenerateSafePromotionBranchName(ghPrClientDetails.PrNumber, ghPrClientDetails.Ref, promotion.Metadata.TargetPaths)
 
 			newBranchRef, err := createBranch(ghPrClientDetails, commit, newBranchName)
 			if err != nil {
@@ -835,25 +816,6 @@ func handleMergedPrEvent(ghPrClientDetails GhPrClientDetails, prApproverGithubCl
 	return err
 }
 
-// Creating a unique branch name based on the PR number, PR ref and the promotion target paths
-// Max length of branch name is 250 characters
-func generateSafePromotionBranchName(prNumber int, originalBranchName string, targetPaths []string) string {
-	targetPathsBa := []byte(strings.Join(targetPaths, "_"))
-	hasher := sha1.New() //nolint:gosec // G505: Blocklisted import crypto/sha1: weak cryptographic primitive (gosec), this is not a cryptographic use case
-	hasher.Write(targetPathsBa)
-	uniqBranchNameSuffix := firstN(hex.EncodeToString(hasher.Sum(nil)), 12)
-	safeOriginalBranchName := firstN(strings.ReplaceAll(originalBranchName, "/", "-"), 200)
-	return fmt.Sprintf("promotions/%v-%v-%v", prNumber, safeOriginalBranchName, uniqBranchNameSuffix)
-}
-
-func firstN(str string, n int) string {
-	v := []rune(str)
-	if n >= len(v) {
-		return str
-	}
-	return string(v[:n])
-}
-
 func MergePr(details GhPrClientDetails, number int) error {
 	operation := func() error {
 		err := tryMergePR(details, number)
@@ -887,15 +849,6 @@ func tryMergePR(details GhPrClientDetails, number int) error {
 
 func isMergeErrorRetryable(errMessage string) bool {
 	return strings.Contains(errMessage, "405") && strings.Contains(errMessage, "try the merge again")
-}
-
-func (pm *prMetadata) DeSerialize(s string) error {
-	decoded, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return err
-	}
-	err = json.Unmarshal(decoded, pm)
-	return err
 }
 
 func (p GhPrClientDetails) CommentOnPr(commentBody string) error {
@@ -1097,7 +1050,7 @@ func GenerateSyncTreeEntriesForCommit(treeEntries *[]*github.TreeEntry, ghPrClie
 
 		// Create/update non-blocked source files in target
 		for filename, sha := range sourceFilesSHAs {
-			if isFileBlockedGh(filename, blockList) {
+			if promlib.IsFileBlocked(filename, blockList) {
 				ghPrClientDetails.PrLogger.Debugf("Skipping blocked file %s (matched blockList pattern)", filename)
 				continue
 			}
@@ -1114,7 +1067,7 @@ func GenerateSyncTreeEntriesForCommit(treeEntries *[]*github.TreeEntry, ghPrClie
 		// Delete non-blocked target files not present in source
 		for filename := range targetFilesSHAs {
 			if _, found := sourceFilesSHAs[filename]; !found {
-				if isFileBlockedGh(filename, blockList) {
+				if promlib.IsFileBlocked(filename, blockList) {
 					ghPrClientDetails.PrLogger.Debugf("Skipping deletion of blocked file %s (matched blockList pattern)", filename)
 					continue
 				}
@@ -1164,21 +1117,6 @@ func GenerateSyncTreeEntriesForCommit(treeEntries *[]*github.TreeEntry, ghPrClie
 	return err
 }
 
-// isFileBlockedGh checks if a relative file path matches any blockList glob patterns (doublestar syntax).
-func isFileBlockedGh(relativePath string, blockList []string) bool {
-	for _, pattern := range blockList {
-		matched, err := doublestar.PathMatch(pattern, relativePath)
-		if err != nil {
-			log.Errorf("Invalid blockList glob pattern %q: %v", pattern, err)
-			continue
-		}
-		if matched {
-			return true
-		}
-	}
-	return false
-}
-
 // generateDeletionTreeEntriesWithBlockList is like generateDeletionTreeEntries but skips blocked files.
 func generateDeletionTreeEntriesWithBlockList(ghPrClientDetails *GhPrClientDetails, path *string, branch *string, treeEntries *[]*github.TreeEntry, blockList []string) error {
 	if len(blockList) == 0 {
@@ -1189,7 +1127,7 @@ func generateDeletionTreeEntriesWithBlockList(ghPrClientDetails *GhPrClientDetai
 	rootPath := *path
 	generateFlatMapfromFileTree(ghPrClientDetails, path, &rootPath, branch, filesSHAs)
 	for filename := range filesSHAs {
-		if isFileBlockedGh(filename, blockList) {
+		if promlib.IsFileBlocked(filename, blockList) {
 			ghPrClientDetails.PrLogger.Debugf("Skipping deletion of blocked file %s (matched blockList pattern)", filename)
 			continue
 		}
@@ -1303,7 +1241,7 @@ func generatePromotionPrBody(ghPrClientDetails GhPrClientDetails, components str
 
 	newPrBody = prBody(keys, newPrMetadata, newPrBody, promotionSkipPaths)
 
-	prMetadataString, _ := newPrMetadata.serialize()
+	prMetadataString, _ := newPrMetadata.Serialize()
 
 	newPrBody = newPrBody + "\n<!--|Telefonistka data, do not delete|" + prMetadataString + "|-->"
 

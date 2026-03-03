@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/commercetools/telefonistka/internal/pkg/argocd"
+	promlib "github.com/commercetools/telefonistka/internal/pkg/promotion"
 	"github.com/google/go-github/v62/github"
 	"github.com/stretchr/testify/assert"
 )
@@ -43,7 +44,7 @@ func TestGenerateSafePromotionBranchName(t *testing.T) {
 	prNumber := 11
 	originBranch := "originBranch"
 	targetPaths := []string{"targetPath1", "targetPath2"}
-	result := generateSafePromotionBranchName(prNumber, originBranch, targetPaths)
+	result := promlib.GenerateSafePromotionBranchName(prNumber, originBranch, targetPaths)
 	expectedResult := "promotions/11-originBranch-676f02019f18"
 	if result != expectedResult {
 		t.Errorf("Expected %s, got %s", expectedResult, result)
@@ -57,7 +58,7 @@ func TestGenerateSafePromotionBranchNameLongBranchName(t *testing.T) {
 
 	originBranch := string(bytes.Repeat([]byte("originBranch"), 100))
 	targetPaths := []string{"targetPath1", "targetPath2"}
-	result := generateSafePromotionBranchName(prNumber, originBranch, targetPaths)
+	result := promlib.GenerateSafePromotionBranchName(prNumber, originBranch, targetPaths)
 	if len(result) > 250 {
 		t.Errorf("Expected branch name to be less than 250 characters, got %d", len(result))
 	}
@@ -90,7 +91,7 @@ func TestGenerateSafePromotionBranchNameLongTargets(t *testing.T) {
 		"loooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong/target/path/19",
 		"loooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong/target/path/20",
 	}
-	result := generateSafePromotionBranchName(prNumber, originBranch, targetPaths)
+	result := promlib.GenerateSafePromotionBranchName(prNumber, originBranch, targetPaths)
 	if len(result) > 250 {
 		t.Errorf("Expected branch name to be less than 250 characters, got %d", len(result))
 	}

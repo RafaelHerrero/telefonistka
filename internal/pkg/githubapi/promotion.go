@@ -7,49 +7,15 @@ import (
 	"strings"
 
 	cfg "github.com/commercetools/telefonistka/internal/pkg/configuration"
+	promlib "github.com/commercetools/telefonistka/internal/pkg/promotion"
 	prom "github.com/commercetools/telefonistka/internal/pkg/prometheus"
 	"github.com/google/go-github/v62/github"
-	log "github.com/sirupsen/logrus"
 	yaml "gopkg.in/yaml.v2"
 )
 
-type PromotionInstance struct {
-	Metadata          PromotionInstanceMetaData `deep:"-"` // Unit tests ignore Metadata currently
-	ComputedSyncPaths map[string]string         // key is target, value is source
-}
+type PromotionInstance = promlib.PromotionInstance
+type PromotionInstanceMetaData = promlib.PromotionInstanceMetaData
 
-type PromotionInstanceMetaData struct {
-	SourcePath                     string
-	TargetPaths                    []string
-	TargetDescription              string
-	PerComponentSkippedTargetPaths map[string][]string // ComponentName is the key,
-	ComponentNames                 []string
-	AutoMerge                      bool
-	BlockList                      []string
-}
-
-func containMatchingRegex(patterns []string, str string) bool {
-	for _, pattern := range patterns {
-		doesElementMatchPattern, err := regexp.MatchString(pattern, str)
-		if err != nil {
-			log.Errorf("failed to match regex %s vs %s\n%s", pattern, str, err)
-			return false
-		}
-		if doesElementMatchPattern {
-			return true
-		}
-	}
-	return false
-}
-
-func contains(s []string, str string) bool {
-	for _, v := range s {
-		if v == str {
-			return true
-		}
-	}
-	return false
-}
 
 func DetectDrift(ghPrClientDetails GhPrClientDetails) error {
 	ghPrClientDetails.PrLogger.Debugln("Checking for Drift")
@@ -205,7 +171,7 @@ func generatePlanBasedOnChangeddComponent(ghPrClientDetails GhPrClientDetails, c
 				if configPromotionPath.Conditions.PrHasLabels != nil {
 					thisPrHasTheRightLabel := false
 					for _, l := range ghPrClientDetails.Labels {
-						if contains(configPromotionPath.Conditions.PrHasLabels, *l.Name) {
+						if promlib.ContainsString(configPromotionPath.Conditions.PrHasLabels, *l.Name) {
 							thisPrHasTheRightLabel = true
 							break
 						}
@@ -236,7 +202,7 @@ func generatePlanBasedOnChangeddComponent(ghPrClientDetails GhPrClientDetails, c
 							},
 							ComputedSyncPaths: map[string]string{},
 						}
-					} else if !contains(entry.Metadata.ComponentNames, componentToPromote.ComponentName) {
+					} else if !promlib.ContainsString(entry.Metadata.ComponentNames, componentToPromote.ComponentName) {
 						entry.Metadata.ComponentNames = append(entry.Metadata.ComponentNames, componentToPromote.ComponentName)
 						promotions[mapKey] = entry
 					}
@@ -245,13 +211,13 @@ func generatePlanBasedOnChangeddComponent(ghPrClientDetails GhPrClientDetails, c
 						if componentConfig != nil {
 							// BlockList supersedes Allowlist, if something matched there the entry is ignored regardless of allowlist
 							if componentConfig.PromotionTargetBlockList != nil {
-								if containMatchingRegex(componentConfig.PromotionTargetBlockList, indevidualPath) {
+								if promlib.ContainMatchingRegex(componentConfig.PromotionTargetBlockList, indevidualPath) {
 									promotions[mapKey].Metadata.PerComponentSkippedTargetPaths[componentToPromote.ComponentName] = append(promotions[mapKey].Metadata.PerComponentSkippedTargetPaths[componentToPromote.ComponentName], indevidualPath)
 									continue
 								}
 							}
 							if componentConfig.PromotionTargetAllowList != nil {
-								if !containMatchingRegex(componentConfig.PromotionTargetAllowList, indevidualPath) {
+								if !promlib.ContainMatchingRegex(componentConfig.PromotionTargetAllowList, indevidualPath) {
 									promotions[mapKey].Metadata.PerComponentSkippedTargetPaths[componentToPromote.ComponentName] = append(promotions[mapKey].Metadata.PerComponentSkippedTargetPaths[componentToPromote.ComponentName], indevidualPath)
 									continue
 								}

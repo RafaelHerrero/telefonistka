@@ -2,6 +2,8 @@ package gitlabapi
 
 import (
 	"testing"
+
+	promlib "github.com/commercetools/telefonistka/internal/pkg/promotion"
 )
 
 func TestIsFileBlocked(t *testing.T) {
@@ -78,9 +80,9 @@ func TestIsFileBlocked(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := isFileBlocked(tt.relativePath, tt.blockList)
+			result := promlib.IsFileBlocked(tt.relativePath, tt.blockList)
 			if result != tt.expected {
-				t.Errorf("isFileBlocked(%q, %v) = %v, want %v", tt.relativePath, tt.blockList, result, tt.expected)
+				t.Errorf("promlib.IsFileBlocked(%q, %v) = %v, want %v", tt.relativePath, tt.blockList, result, tt.expected)
 			}
 		})
 	}
