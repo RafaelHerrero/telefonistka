@@ -14,10 +14,12 @@ import (
 
 // CompareRepoDirectories compares two directories on a given ref by
 // building flat maps of relative-path→SHA, then fetching content for any differences.
+// Files matching blockList patterns are excluded from the comparison.
 func CompareRepoDirectories(
 	ctx context.Context,
 	provider gitprovider.GitProvider,
 	owner, repo, sourcePath, targetPath, ref, blameURLPrefix string,
+	blockList []string,
 	prLogger *log.Entry,
 ) (bool, string, error) {
 	sourceFiles, err := ListFilesRecursive(ctx, provider, owner, repo, sourcePath, ref)
@@ -36,6 +38,10 @@ func CompareRepoDirectories(
 	for _, f := range sourceFiles {
 		rel := strings.TrimPrefix(f.Path, sourcePath)
 		rel = strings.TrimPrefix(rel, "/")
+		if IsFileBlocked(rel, blockList) {
+			prLogger.Debugf("Skipping blocked file %s in drift comparison", rel)
+			continue
+		}
 		sourceSHAs[rel] = f.SHA
 	}
 
@@ -43,6 +49,9 @@ func CompareRepoDirectories(
 	for _, f := range targetFiles {
 		rel := strings.TrimPrefix(f.Path, targetPath)
 		rel = strings.TrimPrefix(rel, "/")
+		if IsFileBlocked(rel, blockList) {
+			continue
+		}
 		targetSHAs[rel] = f.SHA
 	}
 

@@ -29,7 +29,7 @@ func DetectDrift(ghPrClientDetails GhPrClientDetails) error {
 	for _, promotion := range promotions {
 		ghPrClientDetails.PrLogger.Debugf("Checking drift for %s", promotion.Metadata.SourcePath)
 		for trgt, src := range promotion.ComputedSyncPaths {
-			hasDiff, diffOutput, _ := CompareRepoDirectories(ghPrClientDetails, src, trgt, defaultBranch)
+			hasDiff, diffOutput, _ := CompareRepoDirectories(ghPrClientDetails, src, trgt, defaultBranch, promotion.Metadata.BlockList)
 			if hasDiff {
 				mapKey := fmt.Sprintf("`%s` ↔️  `%s`", src, trgt)
 				diffOutputMap[mapKey] = diffOutput

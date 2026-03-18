@@ -38,6 +38,7 @@ func ListFilesRecursive(
 // GenerateSyncCommitActions creates CommitActions to sync files from source to target directory.
 // It handles create/update and delete operations.
 // blockList contains glob patterns (doublestar syntax) for files that should be skipped during sync.
+// Files with identical SHAs in source and target are skipped (already in sync).
 func GenerateSyncCommitActions(
 	ctx context.Context,
 	provider gitprovider.GitProvider,
@@ -53,11 +54,14 @@ func GenerateSyncCommitActions(
 
 	targetFiles, _ := ListFilesRecursive(ctx, provider, owner, repo, targetPath, ref)
 
-	targetRelativePaths := make(map[string]struct{})
+	// Build a map of target relative paths → SHA for efficient comparison.
+	// Using SHA comparison avoids fetching content for files that are already identical
+	// and prevents sending no-op "update" actions to the Git provider.
+	targetFileInfo := make(map[string]string) // relativePath → SHA
 	for _, file := range targetFiles {
 		relativePath := strings.TrimPrefix(file.Path, targetPath)
 		relativePath = strings.TrimPrefix(relativePath, "/")
-		targetRelativePaths[relativePath] = struct{}{}
+		targetFileInfo[relativePath] = file.SHA
 	}
 
 	sourceRelativePaths := make(map[string]struct{})
@@ -73,17 +77,25 @@ func GenerateSyncCommitActions(
 			continue
 		}
 
+		targetFilePath := strings.TrimSuffix(targetPath, "/") + "/" + relativePath
+
+		targetSHA, existsInTarget := targetFileInfo[relativePath]
+		if existsInTarget && targetSHA != "" && file.SHA != "" && targetSHA == file.SHA {
+			// File SHAs match — already in sync, skip.
+			continue
+		}
+
+		// SHAs differ or file is new — fetch content and create action.
 		content, err := provider.GetFileContent(ctx, owner, repo, file.Path, ref)
 		if err != nil {
 			prLogger.Errorf("Failed to get file content for %s: %v", file.Path, err)
 			return nil, err
 		}
 
-		targetFilePath := strings.TrimSuffix(targetPath, "/") + "/" + relativePath
 		encodedContent := base64.StdEncoding.EncodeToString(content)
 
 		action := "create"
-		if _, exists := targetRelativePaths[relativePath]; exists {
+		if existsInTarget {
 			action = "update"
 		}
 
